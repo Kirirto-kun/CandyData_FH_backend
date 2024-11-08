@@ -84,7 +84,7 @@ class FormsInDB(Base):
     candidate_id = Column(Unicode(255), ForeignKey('candidates.id'), nullable=False)
     status = Column(Unicode(50), nullable=False)
     questions = Column(JSON, nullable=False)
-    answer = Column(UnicodeText, nullable=True)
+    answer = Column(JSON, nullable=True)
     candidate = relationship("CandidateInDB", back_populates="forms")
 
 class Description(BaseModel):

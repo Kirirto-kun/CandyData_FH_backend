@@ -13,6 +13,7 @@ from sqlalchemy.orm import relationship
 from config import Base
 import openai
 import requests
+from typing import List
 import os
 import json
 
@@ -473,6 +474,7 @@ def generate_form_with_gpt(description):
     except (KeyError, json.JSONDecodeError):
         raise HTTPException(status_code=500, detail="Ошибка обработки ответа от GPT")
 
+
 @app.post("/create_form/")
 async def create_form(
     prompt: Description, 
@@ -561,3 +563,33 @@ async def get_user_questions_route(token: str = Depends(oauth2_scheme), db: Sess
 
     return user_questions
 
+
+class AnswerUploadRequest(BaseModel):
+    candidate_id: int
+    answers: List[str]  # Список ответов для вопросов
+
+# Эндпоинт для загрузки ответов кандидатом
+@app.post("/upload_answers/{user_id}/")
+async def upload_answers(
+    user_id: int,
+    answer_data: AnswerUploadRequest,
+    db: Session = Depends(get_db)  # Получение сессии базы данных
+):
+    # Находим форму по user_id и candidate_id
+    form = db.query(FormsInDB).filter(
+        FormsInDB.user_id == user_id,
+        FormsInDB.candidate_id == answer_data.candidate_id
+    ).first()
+
+    # Проверка на наличие формы
+    if form is None:
+        raise HTTPException(status_code=404, detail="Form not found for this user and candidate")
+
+    # Обновляем ответы и статус формы
+    form.answer = answer_data.answers  # Записываем ответы (список ответов)
+    form.status = "complete"  # Обновляем статус на "complete"
+
+    # Сохраняем изменения в базе данных
+    db.commit()
+
+    return {"message": "Answers uploaded and status updated successfully"}
