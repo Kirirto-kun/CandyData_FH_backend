@@ -33,6 +33,8 @@ class CandidateInDB(Base):
     tags = Column(JSON, nullable=True)
     languages = Column(JSON, nullable=True)
 
+    forms = relationship("FormsInDB", back_populates="candidate")
+
 # Vacancy table
 class VacancyInDB(Base):
     __tablename__ = "vacancies"
@@ -74,7 +76,18 @@ class MessageInDB(Base):
 
     request = relationship("RequestInDB", back_populates="messages")
 
+class FormsInDB(Base):
+    __tablename__ = "forms"
 
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    candidate_id = Column(Unicode(255), ForeignKey('candidates.id'), nullable=False) 
+    status = Column(Unicode(50), nullable=False)
+    questions = Column(JSON, nullable=False)
+
+    candidate = relationship("CandidateInDB", back_populates="forms")
+
+class Description(BaseModel):
+    description: str
 
 class ChatbotRequest(BaseModel):
     user_message: str

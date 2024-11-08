@@ -7,6 +7,7 @@ from auth_utils import hash_password, verify_password, create_access_token, veri
 from datetime import timedelta
 from data_scraper import get_resume_please 
 from sqlalchemy import Column, Integer, String, Text, ForeignKey
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import relationship
 from config import Base
 import openai
@@ -18,6 +19,14 @@ app = FastAPI()
 init_db()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # Or specify specific domains
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, DELETE, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
 @app.post("/register/", response_model=dict)
 def register_user(user: UserCreate, db: Session = Depends(get_db)) -> dict:
@@ -85,7 +94,7 @@ def get_resume(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db
 
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
-
+print(AZURE_OPENAI_ENDPOINT)
 
 class ResumeCreate(BaseModel):
     text: str
@@ -158,6 +167,31 @@ def prompt_to_gpt(prompt):
 
     # Получаем текст ответа от GPT
     gpt_response = response.json()["choices"][0]["message"]["content"].strip()
+    return gpt_response
+
+async def generate_form_with_gpt(description: str) -> str:
+    # Отправка запроса в GPT для создания структуры формы
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": AZURE_API_KEY
+    }
+    data = {
+        "messages": [
+            {"role": "system", "content": "Ты помощник по созданию вопросов. Я хочу чтобы ты создал максимум 3 вопроса. Ты должен сделать их в таком формате: ['вопрос1', 'вопрос2', 'вопрос3']. НЕ ПИШИ НИЧЕГО ЛИШНЕГО, НИКАКИХ ДОПОЛНИТЕЛЬНЫХ СЛОВ ПРИВЕСТИВИЯ И ТД. ТОЛЬКО ВОПРОСЫ В НУЖНОМ ФОРМАТЕ"},
+            {"role": "user", "content": f"Создай вопросы на основе следующего описания: {description}"}
+        ],
+        "max_tokens": 1000,
+        "temperature": 0.5
+    }
+    
+    response = requests.post(AZURE_OPENAI_ENDPOINT, headers=headers, json=data)
+    
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Ошибка при запросе к GPT-4")
+    
+    # Получаем ответ от GPT-4
+    gpt_response = response.json()["choices"][0]["message"]["content"].strip()
+    
     return gpt_response
 
 
@@ -425,4 +459,35 @@ def parse_and_add_vacancies(text: str, token: str = Depends(oauth2_scheme), db: 
     
     return {"msg": f"{len(vacancies)} вакансий добавлено"}
 
+@app.post("/create_form/")
+async def create_form(prompt: Description, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    print(prompt.description)
+    payload = verify_access_token(token)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+    user_email = payload.get("sub")
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    candidates = db.query(CandidateInDB).filter(CandidateInDB.user_id == user.id).all()
+    
+    form_structure = await generate_form_with_gpt(prompt.description)
+    return form_structure
+    # status = "new"  
+    
+    # form_ids = []
+    # for candidate in candidates:
+    #     new_form = FormsInDB(
+    #         status=status,
+    #         questions=form_structure,
+    #         candidate_id=candidate.id,  
+    #     )
+    #     db.add(new_form)
+    #     form_ids.append(new_form.id)
+    
+    # db.commit()
+    
+    # return {"message": "Forms created successfully", "form_ids": form_ids}
 
