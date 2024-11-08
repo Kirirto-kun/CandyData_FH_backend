@@ -97,7 +97,6 @@ load_dotenv()
 
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
-print(AZURE_OPENAI_ENDPOINT)
 
 class ResumeCreate(BaseModel):
     text: str
@@ -324,7 +323,6 @@ async def chatbot_interaction(
 
         for resume in resumeJson:
             new_resume = CandidateInDB(
-                id=resume["id"],
                 user_id=user.id,
                 name=resume["name"],
                 salary=resume["salary"],
@@ -526,20 +524,28 @@ def get_user_questions_and_answers(db: Session, token: str):
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Получаем все формы пользователя
-    user_forms = db.query(FormsInDB).filter(FormsInDB.user_id == user.id).all()
+    # Получаем все формы пользователя и связываем их с таблицей кандидатов
+    user_forms = (
+        db.query(FormsInDB)
+        .join(CandidateInDB, FormsInDB.candidate_id == CandidateInDB.id)
+        .filter(FormsInDB.user_id == user.id)
+        .all()
+    )
 
     # Если формы не найдены
     if not user_forms:
         raise HTTPException(status_code=404, detail="No forms found for the user")
 
-    # Собираем вопросы и ответы из всех форм
+    # Собираем вопросы, ответы и имя кандидата из всех форм
     forms_data = []
     for form in user_forms:
         questions = json.loads(form.questions)  # Десериализуем вопросы из JSON
         answer = form.answer  # Получаем ответ на форму
+        candidate_name = form.candidate.name  # Получаем имя кандидата
+
         forms_data.append({
             "candidate_id": form.candidate_id,
+            "candidate_name": candidate_name,  # Добавляем имя кандидата
             "status": form.status,
             "questions": questions,
             "answer": answer
@@ -554,3 +560,4 @@ async def get_user_questions_route(token: str = Depends(oauth2_scheme), db: Sess
     user_questions = get_user_questions_and_answers(db, token)
 
     return user_questions
+

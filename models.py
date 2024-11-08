@@ -23,7 +23,7 @@ class UserInDB(Base):
 class CandidateInDB(Base):
     __tablename__ = "candidates"
 
-    id = Column(Unicode(255), primary_key=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     name = Column(UnicodeText, nullable=True)
     salary = Column(Integer, nullable=True)
