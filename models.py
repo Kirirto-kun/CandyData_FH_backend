@@ -26,9 +26,9 @@ class CandidateInDB(Base):
     id = Column(Unicode(255), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     name = Column(UnicodeText, nullable=True)
-    salary = Column(UnicodeText, nullable=True)
+    salary = Column(Integer, nullable=True)
     description = Column(UnicodeText, nullable=True)
-    experience = Column(UnicodeText, nullable=True)
+    experience = Column(Integer, nullable=True)
     expObject = Column(JSON, nullable=True)
     tags = Column(JSON, nullable=True)
     languages = Column(JSON, nullable=True)
@@ -80,10 +80,11 @@ class FormsInDB(Base):
     __tablename__ = "forms"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    candidate_id = Column(Unicode(255), ForeignKey('candidates.id'), nullable=False) 
+    user_id = Column(Integer, nullable=False)
+    candidate_id = Column(Unicode(255), ForeignKey('candidates.id'), nullable=False)
     status = Column(Unicode(50), nullable=False)
     questions = Column(JSON, nullable=False)
-
+    answer = Column(UnicodeText, nullable=True)
     candidate = relationship("CandidateInDB", back_populates="forms")
 
 class Description(BaseModel):

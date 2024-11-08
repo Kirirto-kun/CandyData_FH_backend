@@ -65,14 +65,25 @@ def get_resume(link):
     except AttributeError:
         name = None
     try:
-        salary = soup.find(attrs={"class": "resume-block__salary"}).text.replace("\u2009", "").replace("\xa0",
+        salary_text = soup.find(attrs={"class": "resume-block__salary"}).text.replace("\u2009", "").replace("\xa0",
                                                                                                        " ").strip()
+        salary_match = re.search(r"(\d+)", salary_text)
+        if salary_match:
+            salary = int(salary_match.group(1))
+        else:
+            salary = 0
+
     except AttributeError:
         salary = None
 
     try:
-        experience = soup.find(attrs={"class": "resume-block__title-text_sub"}).text.replace("Опыт работы", "").replace(
+        experience_text = soup.find(attrs={"class": "resume-block__title-text_sub"}).text.replace("Опыт работы", "").replace(
             "\xa0", " ").strip()
+        experience_match = re.search(r"(\d+)\s*(год|лет|year|years)", experience_text)
+        if experience_match:
+            experience = int(experience_match.group(1))
+        else:
+            experience = 0
     except AttributeError:
         experience = None
 

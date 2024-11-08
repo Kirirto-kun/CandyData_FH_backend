@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from dotenv import load_dotenv
 from models import *
 from config import get_db, init_db
 from auth_utils import hash_password, verify_password, create_access_token, verify_access_token
@@ -13,6 +14,7 @@ from config import Base
 import openai
 import requests
 import os
+import json
 
 app = FastAPI()
 
@@ -91,6 +93,7 @@ def get_resume(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db
     return {"resume": [r.data for r in resume_data]}
 
 
+load_dotenv()
 
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
@@ -169,30 +172,6 @@ def prompt_to_gpt(prompt):
     gpt_response = response.json()["choices"][0]["message"]["content"].strip()
     return gpt_response
 
-async def generate_form_with_gpt(description: str) -> str:
-    # Отправка запроса в GPT для создания структуры формы
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": AZURE_API_KEY
-    }
-    data = {
-        "messages": [
-            {"role": "system", "content": "Ты помощник по созданию вопросов. Я хочу чтобы ты создал максимум 3 вопроса. Ты должен сделать их в таком формате: ['вопрос1', 'вопрос2', 'вопрос3']. НЕ ПИШИ НИЧЕГО ЛИШНЕГО, НИКАКИХ ДОПОЛНИТЕЛЬНЫХ СЛОВ ПРИВЕСТИВИЯ И ТД. ТОЛЬКО ВОПРОСЫ В НУЖНОМ ФОРМАТЕ"},
-            {"role": "user", "content": f"Создай вопросы на основе следующего описания: {description}"}
-        ],
-        "max_tokens": 1000,
-        "temperature": 0.5
-    }
-    
-    response = requests.post(AZURE_OPENAI_ENDPOINT, headers=headers, json=data)
-    
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Ошибка при запросе к GPT-4")
-    
-    # Получаем ответ от GPT-4
-    gpt_response = response.json()["choices"][0]["message"]["content"].strip()
-    
-    return gpt_response
 
 
 # Маршрут для добавления резюме
@@ -459,9 +438,50 @@ def parse_and_add_vacancies(text: str, token: str = Depends(oauth2_scheme), db: 
     
     return {"msg": f"{len(vacancies)} вакансий добавлено"}
 
+def generate_form_with_gpt(description):
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": AZURE_API_KEY
+    }
+    data = {
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Ты помощник по созданию вопросов. Я хочу чтобы ты создал максимум 3 вопроса. "
+                    "Ты должен сделать их в таком формате: ['вопрос1', 'вопрос2', 'вопрос3']. "
+                    "НЕ ПИШИ НИЧЕГО ЛИШНЕГО, НИКАКИХ ДОПОЛНИТЕЛЬНЫХ СЛОВ ПРИВЕТСТВИЯ И ТД. "
+                    "ТОЛЬКО ВОПРОСЫ В НУЖНОМ ФОРМАТЕ, верни ответ в виде JSON"
+                )
+            },
+            {
+                "role": "user",
+                "content": f"Создай вопросы на основе следующего описания: {description}"
+            }
+        ],
+        "max_tokens": 1000,
+        "temperature": 0.5
+    }
+
+    response = requests.post(AZURE_OPENAI_ENDPOINT, headers=headers, json=data)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Ошибка при запросе к GPT-4 Turbo")
+
+    try:
+        gpt_response = response.json()["choices"][0]["message"]["content"].strip()
+        questions = json.loads(gpt_response)  # Преобразуем JSON-строку в объект Python
+        return questions
+    except (KeyError, json.JSONDecodeError):
+        raise HTTPException(status_code=500, detail="Ошибка обработки ответа от GPT")
+
 @app.post("/create_form/")
-async def create_form(prompt: Description, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    print(prompt.description)
+async def create_form(
+    prompt: Description, 
+    token: str = Depends(oauth2_scheme), 
+    db: Session = Depends(get_db)
+):
+    # Проверка доступа пользователя
     payload = verify_access_token(token)
     if payload is None:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -470,24 +490,67 @@ async def create_form(prompt: Description, token: str = Depends(oauth2_scheme), 
     user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    candidates = db.query(CandidateInDB).filter(CandidateInDB.user_id == user.id).all()
-    
-    form_structure = await generate_form_with_gpt(prompt.description)
-    return form_structure
-    # status = "new"  
-    
-    # form_ids = []
-    # for candidate in candidates:
-    #     new_form = FormsInDB(
-    #         status=status,
-    #         questions=form_structure,
-    #         candidate_id=candidate.id,  
-    #     )
-    #     db.add(new_form)
-    #     form_ids.append(new_form.id)
-    
-    # db.commit()
-    
-    # return {"message": "Forms created successfully", "form_ids": form_ids}
 
+    # Генерация вопросов через GPT
+    questions = generate_form_with_gpt(prompt.description)
+
+    # Добавление записей в базу данных
+    forms_to_add = []
+    for candidate_id in range(1, 21):
+        new_form = FormsInDB(
+            user_id=user.id,
+            candidate_id=str(candidate_id),
+            status="Pending",
+            questions=json.dumps(questions)  # Храним вопросы в JSON-формате
+        )
+        forms_to_add.append(new_form)
+
+    # Добавление всех форм за один запрос
+    db.add_all(forms_to_add)
+    db.commit()  
+
+    # Возвращаем информацию о последней добавленной форме (вы можете вернуть ID самой последней)
+    return {"form_id": forms_to_add[-1].id, "questions": questions}
+
+def get_user_questions_and_answers(db: Session, token: str):
+    # Проверка и декодирование токена для получения email (sub)
+    payload = verify_access_token(token)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+    user_email = payload.get("sub")  # Извлекаем email пользователя из токена
+
+    # Находим user_id по email
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Получаем все формы пользователя
+    user_forms = db.query(FormsInDB).filter(FormsInDB.user_id == user.id).all()
+
+    # Если формы не найдены
+    if not user_forms:
+        raise HTTPException(status_code=404, detail="No forms found for the user")
+
+    # Собираем вопросы и ответы из всех форм
+    forms_data = []
+    for form in user_forms:
+        questions = json.loads(form.questions)  # Десериализуем вопросы из JSON
+        answer = form.answer  # Получаем ответ на форму
+        forms_data.append({
+            "candidate_id": form.candidate_id,
+            "status": form.status,
+            "questions": questions,
+            "answer": answer
+        })
+
+    return {"forms": forms_data}
+
+
+@app.get("/get_user_questions/")
+async def get_user_questions_route(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    # Получаем вопросы через выделенную функцию
+    user_questions = get_user_questions_and_answers(db, token)
+
+    return user_questions
