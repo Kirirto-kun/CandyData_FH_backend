@@ -628,11 +628,41 @@ async def upload_answers(
 
     return {"message": "Answers uploaded and status updated successfully"}
 
-client = OpenAI(api_key="")
 
-pc = Pinecone(api_key="")
+def get_azure_embeddings(text: str):
+    url = "https://jafar-m38wjfuy-westeurope.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-05-15"
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": "DOyiAoXCG4zEifnhXXzc8fnMA98031Q4bqpqbe4aApQlYTDZV9cJJQQJ99AKAC5RqLJXJ3w3AAAAACOGx8IK",
+    }
+    payload = {
+        "input": text
+    }
 
-index = pc.Index("fh")
+    response = requests.post(url, headers=headers, json=payload)
+    
+    if response.status_code == 200:
+        return response.json()["data"][0]["embedding"]
+    else:
+        raise HTTPException(status_code=500, detail="Error generating embeddings from Azure API")
+
+def get_azure_chat_response(messages):
+    url = "https://ai-jafarman20072174ai473877890883.openai.azure.com/openai/deployments/gpt-4o-mini-5/chat/completions?api-version=2024-08-01-preview"
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": "AS6k4TYveS8ZScDAFA7KBZ9Wbibno6ffOg2SBzzQYoHLLRVTQ5C0JQQJ99AJACYeBjFXJ3w3AAAAACOGNwbs",
+    }
+    payload = {
+        "messages": messages,
+        "max_tokens": 700
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+    
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]["content"]
+    else:
+        raise HTTPException(status_code=500, detail="Error generating chat response from Azure API")
 
 def extract_important_info(pages):
     prompt = "Extract the following information from the images:\n\n" \
@@ -640,7 +670,6 @@ def extract_important_info(pages):
          "Format the response as JSON with the following structure:\n\n" \
          "{\n  \"name\": \"<Name>\",\n  \"education\": {\n    \"degree\": \"<Degree>\",\n    \"year\": <Year>,\n    \"institution\": \"<Institution>\",\n    \"location\": \"<Location>\",\n    \"field\": \"<Field of study>\"\n  },\n  \"experience\": [\n    {\n      \"job_title\": \"<Job Title>\",\n      \"company\": \"<Company>\",\n      \"duration\": \"<Start Date> — <End Date>\",\n      \"description\": \"<Job Description>\"\n    }\n  ],\n  \"skills\": [\"<Skill1>\", \"<Skill2>\", \"<Skill3>\"],\n  \"location\": \"<Location>\",\n  \"email\": \"<Email Address>\"\n}\n```\n\n" \
          "Ensure all fields are populated based on the information available in the image."
-
 
     # Prepare messages with a prompt and all images
     messages = [
@@ -664,54 +693,41 @@ def extract_important_info(pages):
             ]
         })
 
+    response_content = get_azure_chat_response(messages)
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        max_tokens=700,
-  response_format={ "type": "json_object" }
-      )
-    
-    return response.choices[0].message.content
+    return response_content
+
 
 def save_to_pinecone(data: dict):
     vector_id = hashlib.md5(data["name"].encode("utf-8")).hexdigest()
     name_text = data.get("name", "")
-    education_text = " ".join([
-    str(data["education"].get("degree", "")),
-    str(data["education"].get("year", "")),
-    str(data["education"].get("institution", "")),
-    str(data["education"].get("location", "")),
-    str(data["education"].get("field", ""))
-]) if "education" in data else ""
+    education_text = " ".join([str(data["education"].get("degree", "")),
+                               str(data["education"].get("year", "")),
+                               str(data["education"].get("institution", "")),
+                               str(data["education"].get("location", "")),
+                               str(data["education"].get("field", ""))]) if "education" in data else ""
 
-    
-    experience_text = " ".join([
-        f"{job.get('job_title', '')} at {job.get('company', '')} ({job.get('duration', '')}): {job.get('description', '')}"
-        for job in data.get("experience", [])
-    ])
-    
+    experience_text = " ".join([f"{job.get('job_title', '')} at {job.get('company', '')} ({job.get('duration', '')}): {job.get('description', '')}"
+                               for job in data.get("experience", [])])
+
     skills_text = " ".join(data.get("skills", []))
     location_text = data.get("location", "")
     email_text = data.get("email", "")
-    
+
     embedding_input = f"{name_text} {education_text} {experience_text} {skills_text} {location_text} {email_text}"
-    
-    response = client.embeddings.create(
-        input=embedding_input,
-        model="text-embedding-ada-002"
-    ).data[0].embedding
+
+    embedding = get_azure_embeddings(embedding_input)
 
     metadata = {
         "name": data["name"],
-        "education": education_text,  # JSON string
-        "experience": json.dumps(data.get("experience", []), ensure_ascii=False),  # JSON string
-        "skills": data.get("skills", []),  # list of strings
+        "education": education_text,
+        "experience": json.dumps(data.get("experience", []), ensure_ascii=False),
+        "skills": data.get("skills", []),
         "location": location_text,
         "email": email_text
     }
-    
-    index.upsert(vectors=[{"id": vector_id, "values":response, "metadata":metadata}])
+
+    index.upsert(vectors=[{"id": vector_id, "values": embedding, "metadata": metadata}])
 
 
 @app.post("/upload-cv")
@@ -720,7 +736,6 @@ async def upload_cv(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
     
     base64_images = pdf_to_base64_images(file)
-
     imp = extract_important_info(base64_images)
 
     data = json.loads(imp)
@@ -731,38 +746,11 @@ async def upload_cv(file: UploadFile = File(...)):
 
 @app.get("/get-from-db/{name}")
 async def get_from_db(name: str):
-    response = client.embeddings.create(
-        input=name,
-        model="text-embedding-ada-002"
-    ).data[0].embedding
-    print(response)
-    result = index.query(vector=[response], top_k=5, include_metadata=True)
+    embedding = get_azure_embeddings(name)
+    
+    result = index.query(vector=[embedding], top_k=5, include_metadata=True)
+    
     if result.matches:
         return {"data": result.matches[0].metadata}
     else:
         raise HTTPException(status_code=404, detail="CV not found")
-
-def pdf_to_base64_images(pdf_file):
-    # Load the PDF
-    pdf_document = fitz.open(stream=pdf_file.file.read(), filetype="pdf")
-    base64_images = []
-
-    # Iterate over each page
-    for page_num in range(pdf_document.page_count):
-        page = pdf_document.load_page(page_num)
-        pixmap = page.get_pixmap(dpi=300)  # Set DPI for better resolution
-
-        # Convert pixmap to PIL Image
-        img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
-        
-        # Save image to a BytesIO buffer
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        buffer.seek(0)
-        
-        # Encode the image in base64
-        base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
-        base64_images.append(base64_image)
-
-    pdf_document.close()
-    return base64_images
