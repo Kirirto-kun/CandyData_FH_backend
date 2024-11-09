@@ -13,12 +13,20 @@ from sqlalchemy.orm import relationship
 from config import Base
 import openai
 import requests
+import fitz
+from PIL import Image
+import io
+import base64
 from typing import List
 import os
 import json
 import io
+from pinecone import Pinecone
+from openai import OpenAI
+from PIL import Image
+import base64
+import hashlib
 
-# kirya ya tebye v ls skinu 
 openai.api_key = ''
 
 app = FastAPI()
@@ -619,3 +627,142 @@ async def upload_answers(
     db.commit()
 
     return {"message": "Answers uploaded and status updated successfully"}
+
+client = OpenAI(api_key="")
+
+pc = Pinecone(api_key="")
+
+index = pc.Index("fh")
+
+def extract_important_info(pages):
+    prompt = "Extract the following information from the images:\n\n" \
+         "Required information: name, education, experience, skills, location, email.\n" \
+         "Format the response as JSON with the following structure:\n\n" \
+         "{\n  \"name\": \"<Name>\",\n  \"education\": {\n    \"degree\": \"<Degree>\",\n    \"year\": <Year>,\n    \"institution\": \"<Institution>\",\n    \"location\": \"<Location>\",\n    \"field\": \"<Field of study>\"\n  },\n  \"experience\": [\n    {\n      \"job_title\": \"<Job Title>\",\n      \"company\": \"<Company>\",\n      \"duration\": \"<Start Date> — <End Date>\",\n      \"description\": \"<Job Description>\"\n    }\n  ],\n  \"skills\": [\"<Skill1>\", \"<Skill2>\", \"<Skill3>\"],\n  \"location\": \"<Location>\",\n  \"email\": \"<Email Address>\"\n}\n```\n\n" \
+         "Ensure all fields are populated based on the information available in the image."
+
+
+    # Prepare messages with a prompt and all images
+    messages = [
+        {
+            "role": "user",
+            "content": prompt
+        }
+    ]
+
+    for page in pages:
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Extract info"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{page}",
+                    }
+                }
+            ]
+        })
+
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        max_tokens=700,
+  response_format={ "type": "json_object" }
+      )
+    
+    return response.choices[0].message.content
+
+def save_to_pinecone(data: dict):
+    vector_id = hashlib.md5(data["name"].encode("utf-8")).hexdigest()
+    name_text = data.get("name", "")
+    education_text = " ".join([
+    str(data["education"].get("degree", "")),
+    str(data["education"].get("year", "")),
+    str(data["education"].get("institution", "")),
+    str(data["education"].get("location", "")),
+    str(data["education"].get("field", ""))
+]) if "education" in data else ""
+
+    
+    experience_text = " ".join([
+        f"{job.get('job_title', '')} at {job.get('company', '')} ({job.get('duration', '')}): {job.get('description', '')}"
+        for job in data.get("experience", [])
+    ])
+    
+    skills_text = " ".join(data.get("skills", []))
+    location_text = data.get("location", "")
+    email_text = data.get("email", "")
+    
+    embedding_input = f"{name_text} {education_text} {experience_text} {skills_text} {location_text} {email_text}"
+    
+    response = client.embeddings.create(
+        input=embedding_input,
+        model="text-embedding-ada-002"
+    ).data[0].embedding
+
+    metadata = {
+        "name": data["name"],
+        "education": education_text,  # JSON string
+        "experience": json.dumps(data.get("experience", []), ensure_ascii=False),  # JSON string
+        "skills": data.get("skills", []),  # list of strings
+        "location": location_text,
+        "email": email_text
+    }
+    
+    index.upsert(vectors=[{"id": vector_id, "values":response, "metadata":metadata}])
+
+
+@app.post("/upload-cv")
+async def upload_cv(file: UploadFile = File(...)):
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    
+    base64_images = pdf_to_base64_images(file)
+
+    imp = extract_important_info(base64_images)
+
+    data = json.loads(imp)
+    
+    save_to_pinecone(data)
+    
+    return {"status": "CV processed and saved successfully", "data": imp}
+
+@app.get("/get-from-db/{name}")
+async def get_from_db(name: str):
+    response = client.embeddings.create(
+        input=name,
+        model="text-embedding-ada-002"
+    ).data[0].embedding
+    print(response)
+    result = index.query(vector=[response], top_k=5, include_metadata=True)
+    if result.matches:
+        return {"data": result.matches[0].metadata}
+    else:
+        raise HTTPException(status_code=404, detail="CV not found")
+
+def pdf_to_base64_images(pdf_file):
+    # Load the PDF
+    pdf_document = fitz.open(stream=pdf_file.file.read(), filetype="pdf")
+    base64_images = []
+
+    # Iterate over each page
+    for page_num in range(pdf_document.page_count):
+        page = pdf_document.load_page(page_num)
+        pixmap = page.get_pixmap(dpi=300)  # Set DPI for better resolution
+
+        # Convert pixmap to PIL Image
+        img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+        
+        # Save image to a BytesIO buffer
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+        
+        # Encode the image in base64
+        base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        base64_images.append(base64_image)
+
+    pdf_document.close()
+    return base64_images

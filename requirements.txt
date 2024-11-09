@@ -1,0 +1,13 @@
+fastapi
+sqlalchemy
+python-dotenv
+requests
+openai
+Pillow
+python-multipart
+beautifulsoup4
+fake_useragent
+bs4
+passlib
+pyjwt
+fitz
