@@ -26,6 +26,11 @@ from openai import OpenAI
 from PIL import Image
 import base64
 import hashlib
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
+
 
 openai.api_key = ''
 
@@ -628,6 +633,9 @@ async def upload_answers(
 
     return {"message": "Answers uploaded and status updated successfully"}
 
+pc = Pinecone(api_key="552fa38d-c865-4c95-a0af-a7c65f1302f0")
+
+index = pc.Index("fh")
 
 def get_azure_embeddings(text: str):
     url = "https://jafar-m38wjfuy-westeurope.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-05-15"
@@ -754,3 +762,76 @@ async def get_from_db(name: str):
         return {"data": result.matches[0].metadata}
     else:
         raise HTTPException(status_code=404, detail="CV not found")
+
+def pdf_to_base64_images(pdf_file):
+    # Load the PDF
+    pdf_document = fitz.open(stream=pdf_file.file.read(), filetype="pdf")
+    base64_images = []
+
+    # Iterate over each page
+    for page_num in range(pdf_document.page_count):
+        page = pdf_document.load_page(page_num)
+        pixmap = page.get_pixmap(dpi=300)  # Set DPI for better resolution
+
+        # Convert pixmap to PIL Image
+        img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+        
+        # Save image to a BytesIO buffer
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+        
+        # Encode the image in base64
+        base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        base64_images.append(base64_image)
+
+    pdf_document.close()
+    return base64_images
+
+
+
+  # Ваш пароль для приложения
+
+class SendEmail(BaseModel):
+    email: str
+    subject: str
+    body: str
+
+# Функция для отправки email
+def send_email_via_smtp(email, subject, body):
+    sender_email = 'jafarman2007@gmail.com'
+    sender_password = 'jstb mnob gwod gmbr'
+    receiver_email = email
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    msg['Subject'] = subject
+
+    # Добавляем тело письма
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            text = msg.as_string()
+
+            server.sendmail(sender_email, receiver_email, text)
+            print("YESS")
+    except:
+        print("oh no")
+
+# Пример маршрута FastAPI для отправки письма
+@app.post("/send_email/")
+async def send_email(
+    email_data: SendEmail, 
+    token: str = Depends(oauth2_scheme)  # Можно добавить проверку токена для авторизации
+):
+    try:
+        # Отправляем письмо
+        send_email_via_smtp(email_data.email, email_data.subject, email_data.body)
+        return {"status": "Email sent successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {e}")
+    
+
