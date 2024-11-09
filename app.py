@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File 
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
@@ -16,6 +16,10 @@ import requests
 from typing import List
 import os
 import json
+import io
+
+# kirya ya tebye v ls skinu 
+openai.api_key = ''
 
 app = FastAPI()
 
@@ -30,6 +34,28 @@ app.add_middleware(
     allow_methods=["*"],  # Allow all methods (GET, POST, DELETE, etc.)
     allow_headers=["*"],  # Allow all headers
 )
+
+@app.post("/transcribe/")
+async def transcribe_audio(file: UploadFile = File(...)):
+    try:
+        audio_bytes = await file.read()
+        
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = file.filename
+        
+        transcription = openai.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            language="ru"
+        )
+                
+        return {
+            "transcript": transcription
+        }
+    
+    except Exception as e:
+        return {"error": str(e)}
+
 
 @app.post("/register/", response_model=dict)
 def register_user(user: UserCreate, db: Session = Depends(get_db)) -> dict:
